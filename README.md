@@ -1,2 +1,2 @@
-# daisee_engagement_recognition
+# DAiSEE Engagement Recognition
 Implementation of Engagement Recognition using DAiSEE dataset
