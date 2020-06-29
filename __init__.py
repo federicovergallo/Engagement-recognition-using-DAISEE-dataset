@@ -1,1 +1,2 @@
 from daisee_data_preprocessing import DataPreprocessing
+from camera import VideoCameraModel

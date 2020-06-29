@@ -2,15 +2,17 @@
 # coding: utf-8
 import tensorflow as tf
 import tensorflow.keras.layers as kl
-from tensorflow.keras.applications.resnet50 import ResNet50
+import tensorflow.keras.losses as klo
+from tensorflow.keras.applications.vgg16 import VGG16
 from daisee_data_preprocessing import DataPreprocessing
 import datetime
 import os
 from tqdm import tqdm
 
-BATCH_SIZE = 32
-LR = 0.005
+BATCH_SIZE = 16
+LR = 0.01
 EPOCHS = 100
+use_pretrained = True
 current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 checkpoint_dir = 'checkpoints/'
 log_dir = 'logs/'
@@ -38,22 +40,27 @@ def create_log_dir(log_dir, checkpoint_dir):
         os.mkdir(checkpoint_dir)
 
 
-def network():
+def network(use_pretrained=True):
     model = tf.keras.Sequential()
     model.add(kl.InputLayer(input_shape=(224, 224, 3)))
-    # First conv block
-    model.add(kl.Conv2D(filters=96, kernel_size=7, padding='same', strides=2))
-    model.add(tf.keras.layers.ReLU())
-    model.add(kl.MaxPooling2D(pool_size=(3, 3)))
-    # Second conv block
-    model.add(kl.Conv2D(filters=256, kernel_size=5, padding='same', strides=1))
-    model.add(tf.keras.layers.ReLU())
-    model.add(kl.MaxPooling2D(pool_size=(2, 2)))
-    # Third-Fourth-Fifth conv block
-    for i in range(3):
-        model.add(kl.Conv2D(filters=512, kernel_size=3, padding='same', strides=1))
+    if use_pretrained:
+        vgg = VGG16(weights='imagenet', input_shape=(224, 224, 3), include_top=False)
+        vgg.trainable = False
+        model.add(vgg)
+    else:
+        # First conv block
+        model.add(kl.Conv2D(filters=96, kernel_size=7, padding='same', strides=2))
         model.add(tf.keras.layers.ReLU())
-    model.add(kl.MaxPooling2D(pool_size=(3, 3)))
+        model.add(kl.MaxPooling2D(pool_size=(3, 3)))
+        # Second conv block
+        model.add(kl.Conv2D(filters=256, kernel_size=5, padding='same', strides=1))
+        model.add(tf.keras.layers.ReLU())
+        model.add(kl.MaxPooling2D(pool_size=(2, 2)))
+        # Third-Fourth-Fifth conv block
+        for i in range(3):
+            model.add(kl.Conv2D(filters=512, kernel_size=3, padding='same', strides=1))
+            model.add(tf.keras.layers.ReLU())
+        model.add(kl.MaxPooling2D(pool_size=(3, 3)))
     # Flatten
     model.add(kl.Flatten())
     # First FC
@@ -72,10 +79,10 @@ https://keras.io/guides/writing_a_training_loop_from_scratch/
 Compile into a static graph any function that take tensors as input to apply global performance optimizations.
 '''
 @tf.function
-def train_step(model, x, y):
+def train_step(model, loss_fn, x, y):
     with tf.GradientTape() as tape:
         logits = model(x)
-        loss_value = tf.nn.sigmoid_cross_entropy_with_logits(labels=y, logits=logits)
+        loss_value = loss_fn(y, logits)
     grads = tape.gradient(loss_value, model.trainable_weights)
     optimizer.apply_gradients(zip(grads, model.trainable_weights))
     # Track progress
@@ -123,41 +130,41 @@ if __name__ == '__main__':
     model = network()
 
     # Optimizers and metrics
+    loss_fn = tf.keras.losses.CategoricalCrossentropy()
     optimizer = tf.keras.optimizers.Adam(learning_rate=LR)
     train_loss_avg = tf.keras.metrics.Mean()
-    train_accuracy = tf.keras.metrics.MeanAbsoluteError()
-    val_accuracy = tf.keras.metrics.MeanAbsoluteError()
-    test_accuracy = tf.keras.metrics.MeanAbsoluteError()
+    train_accuracy = tf.keras.metrics.CategoricalAccuracy()
+    val_accuracy = tf.keras.metrics.CategoricalAccuracy()
+    test_accuracy = tf.keras.metrics.CategoricalAccuracy()
 
     create_log_dir(log_dir, checkpoint_dir)
 
     # Training loop
-
     for epoch in range(EPOCHS):
         try:
-            for x_batch_train, y_batch_train in tqdm(train_set, total=1517):
+            # Training loop
+            for x_batch_train, y_batch_train in tqdm(train_set):
                 # Do step
-                loss_value = train_step(model, x_batch_train, y_batch_train)
+                loss_value = train_step(model, loss_fn, x_batch_train, y_batch_train)
 
             # Test on validation set
             for x_batch_val, y_batch_val in val_set:
                 test_step(model, x_batch_val, y_batch_val, 'val')
 
+            # Write in the summary
+            with train_summary_writer.as_default():
+                tf.summary.scalar('Train Loss', train_loss_avg.result(), step=epoch)
+                tf.summary.scalar('Train Accuracy', train_accuracy.result(), step=epoch)
+                tf.summary.scalar('Val Accuracy', val_accuracy.result(), step=epoch)
+
             # Reset training metrics at the end of each epoch
-            train_acc = train_accuracy.result()
             train_accuracy.reset_states()
-            val_acc = val_accuracy.result()
             val_accuracy.reset_states()
 
-            # Writing on tensorboard
-            with train_summary_writer.as_default():
-                tf.summary.scalar('Train loss', train_loss_avg.result(), step=epoch)
-                tf.summary.scalar('Train MAE', train_acc, step=epoch)
-                tf.summary.scalar('Val MAE', val_acc, step=epoch)
-
-            # Save model
             if epoch % 10 == 0:
-                tf.keras.models.save_model(model, '{}/Epoch_{}_model.hp5'.format(checkpoint_dir, str(epoch)), save_format="h5")
+                tf.keras.models.save_model(model, '{}/Epoch_{}_model.hp5'.format(checkpoint_dir, str(epoch)),
+                                           save_format="h5")
+
         except KeyboardInterrupt:
             print("Keyboard Interruption...")
             # Save model
@@ -165,6 +172,6 @@ if __name__ == '__main__':
 
     # Test on validation set
     for x_batch_test, y_batch_test in test_set:
-        test_step(x_batch_test, y_batch_test, 'test')
+        test_step(model, x_batch_test, y_batch_test, 'test')
     test_set_acc = test_accuracy.result()
     print("Accuracy on test set is", test_set_acc)

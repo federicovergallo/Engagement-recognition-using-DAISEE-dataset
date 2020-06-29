@@ -6,9 +6,6 @@ import cv2
 import os
 from tqdm import tqdm
 import tensorflow_datasets as tfds
-import pandas as pd
-import random
-
 
 AUTOTUNE = tf.data.experimental.AUTOTUNE
 batch_size = 32
@@ -17,70 +14,46 @@ np.random.seed(0)
 
 class DataPreprocessing:
     def __init__(self,
-                 IMG_HEIGHT=224,
-                 IMG_WIDTH=224,
-                 dataset_dir='dataset/DAiSEE/DataSet/',
-                 test_dir='Test/',
-                 train_dir='Train/',
-                 val_dir='Validation/',
-                 labels_dir='dataset/DAiSEE/Labels/',
-                 test_label='TestLabels.csv',
-                 train_label='TrainLabels.csv',
-                 val_label='ValidationLabels.csv',
-                 data_augmentation_flag=False,
-                 max_frames=3
+                 IMG_HEIGHT=256,
+                 IMG_WIDTH=256,
+                 dataset_name='cycle_gan/vangogh2photo',
+                 data_augmentation_flag=True
                  ):
         self.IMG_HEIGHT = IMG_HEIGHT
         self.IMG_WIDTH = IMG_WIDTH
-        self.dataset_dir = dataset_dir
-        self.train_dir = self.dataset_dir+train_dir
-        self.test_dir = self.dataset_dir+test_dir
-        self.val_dir = self.dataset_dir+val_dir
-        self.labels_dir = labels_dir
-        self.train_label_dir = self.labels_dir + train_label
-        self.test_label_dir = self.labels_dir + test_label
-        self.val_label_dir = self.labels_dir + val_label
+        self.dataset_name = dataset_name
         self.data_augmentation_flag = data_augmentation_flag
-        self.max_frames = max_frames
-        self.face_cascade = cv2.CascadeClassifier('dataset/haarcascade_frontalface_default.xml')
+        self.train_a = np.array([])
+        self.train_b = np.array([])
+        self.test_a = np.array([])
+        self.test_b = np.array([])
 
-    def get_images_from_set_dir(self, setdir):
+    def dataset_init(self):
         '''
-        Method to find all images in the tree folder
+        This method download and transform a given dataset
+        Works only for cyclegan dataset at the moment
         '''
-        set_dir_images = []
-        humans = os.listdir(setdir)
-        for human in humans:
-            human_dir = setdir + human + "/"
-            videos = os.listdir(human_dir)
-            for video in videos:
-                video_dir = human_dir + video + "/"
-                pictures = os.listdir(video_dir)
-                pictures = random.sample(pictures, self.max_frames)
-                for picture in pictures:
-                    picture_dir = video_dir + picture
-                    if picture.endswith(".jpg"):
-                        set_dir_images.append(picture_dir)
-        return set_dir_images
+        # Load dataset
+        print('Downloading dataset....')
+        dataset, metadata = tfds.load(self.dataset_name,
+                                      with_info=True, as_supervised=False)
 
-    def get_labels_dataframe(self):
+        # Transforming into np arrays
+        print('Transforming dataset in np arrays....')
+        self.train_a = np.asarray([self.image_resize(example['image']) for example in tfds.as_numpy(dataset['trainA'])])
+        self.test_a = np.asarray([self.image_resize(example['image']) for example in tfds.as_numpy(dataset['testA'])])
+        self.train_b = np.asarray([self.image_resize(example['image']) for example in tfds.as_numpy(dataset['trainB'])])
+        self.test_b = np.asarray([self.image_resize(example['image']) for example in tfds.as_numpy(dataset['testB'])])
+
+    def create_dataset(self,):
         '''
-        Method to read pandas dataframe
+        Method to create the dataset
         '''
-        train_df = pd.read_csv(self.train_label_dir, sep=",")
-        test_df = pd.read_csv(self.test_label_dir, sep=",")
-        val_df = pd.read_csv(self.val_label_dir, sep=",")
-        return train_df, test_df, val_df
+        self.dataset_init()
+        if self.data_augmentation_flag:
+            self.data_augmentation()
 
     def image_resize(self, image):
-        # Crop and resize
-        faces = self.face_cascade.detectMultiScale(image, 1.3, 5)
-        try:
-            if faces != 0:
-                x, y, w, h = faces[0]
-                image = image[y:y+h, x:x+w]
-        except:
-            pass
         return cv2.resize(image, (self.IMG_HEIGHT, self.IMG_WIDTH), interpolation=cv2.INTER_AREA)
 
     def random_crop(self, image, crop_height, crop_width):
@@ -115,24 +88,7 @@ class DataPreprocessing:
         cropped = self.random_crop(image, 128, 128)
         return [flipped, flip_up_down, transposed, satured, brightness, contrast, cropped]
 
-    def get_label_picture(self, image_path, label_df):
-        error_ = False
-        video = image_path.split("/")[-2]
-        label_series = label_df.loc[((label_df['ClipID'] == video+'.avi') | (label_df['ClipID'] == video+'.mp4'))]
-        try:
-            index = label_series.index.values[0]
-            label = np.array([label_series['Boredom'].get(index),
-                              label_series['Engagement'].get(index),
-                              label_series['Confusion'].get(index),
-                              label_series['Frustration '].get(index)])
-            label_one_hot = np.zeros_like(label)
-            label_one_hot[np.argmax(label)] = 1
-        except:
-            print('Error in label picture')
-            print(image_path)
-            label_one_hot = ''
-            error_ = True
-        return label_one_hot, error_
+
 
     def augment_dataset(self, dataset, max_number_of_sample):
         '''
@@ -146,6 +102,7 @@ class DataPreprocessing:
             for edit in self.image_edit(image):
                 aug_dataset = np.vstack((aug_dataset, np.expand_dims(edit, axis=0)))
         return aug_dataset
+
 
     def data_augmentation(self, balanced_class=True):
         # Find the less populated dataset and multiply by the number of augmentation techniques
@@ -197,37 +154,24 @@ class DataPreprocessing:
         # open the TFRecords file
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
+        writer = tf.io.TFRecordWriter(output_dir+'train.tfrecords')
+        datasets = [[self.train_a, self.train_b], [self.test_a, self.test_b]]
+        for dataset in datasets:
+            label = '0'
+            for set in dataset:
+                for img in tqdm(set):
+                    # Create a feature
+                    feature = {'label': self._bytes_feature(tf.compat.as_bytes(label)),
+                               'image': self._bytes_feature(tf.compat.as_bytes(img.tostring()))}
+                    # Create an example protocol buffer
+                    example = tf.train.Example(features=tf.train.Features(feature=feature))
 
-        # Read dataframes
-        train_df, test_df, val_df = self.get_labels_dataframe()
-
-        # Objects to iterate
-        objs = [('train', self.train_dir, train_df),
-                ('test', self.test_dir, test_df),
-                ('val', self.val_dir, val_df)]
-
-        for name, dataset, label_df in tqdm(objs):
-            # Open Writer
-            writer = tf.io.TFRecordWriter(output_dir+name+'.tfrecords')
-            # Get all the images of a set
-            images_path = self.get_images_from_set_dir(dataset)
-            for image_path in tqdm(images_path, total=len(images_path)):
-                # Read the image from path
-                img = cv2.imread(image_path)[..., ::-1]
-                img = self.image_resize(img)
-                # Read the label
-                label, error_ = self.get_label_picture(image_path, label_df)
-                if error_:
-                    continue
-                # Create a feature
-                feature = {'label': self._bytes_feature(tf.compat.as_bytes(label.tostring())),
-                           'image': self._bytes_feature(tf.compat.as_bytes(img.tostring()))}
-                # Create an example protocol buffer
-                example = tf.train.Example(features=tf.train.Features(feature=feature))
-
-                # Serialize to string and write on the file
-                writer.write(example.SerializeToString())
+                    # Serialize to string and write on the file
+                    writer.write(example.SerializeToString())
+                label = '1'
             writer.close()
+            writer = tf.io.TFRecordWriter(output_dir + 'test.tfrecords')
+        writer.close()
 
     def decode(self, serialized_example):
         """
@@ -247,7 +191,7 @@ class DataPreprocessing:
 
         # 2. Convert the data
         image = tf.io.decode_raw(features['image'], tf.uint8)
-        label = tf.io.decode_raw(features['label'], tf.int64)
+        label = tf.strings.to_number(features['label'])
 
         # 3. reshape
         image = tf.convert_to_tensor(tf.reshape(image, IMAGE_SHAPE))
@@ -258,9 +202,9 @@ class DataPreprocessing:
 if __name__ == '__main__':
     preprocessing_class = DataPreprocessing()
     # Download and create dataset
-    #preprocessing_class.create_dataset()
+    preprocessing_class.create_dataset()
     # Write tf record
-    #preprocessing_class.writeTfRecord('tfrecords/')
+    preprocessing_class.writeTfRecord('tfrecords/')
 
     # Read TfRecord
     tfrecord_path = 'tfrecords/train.tfrecords'
