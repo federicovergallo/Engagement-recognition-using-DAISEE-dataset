@@ -69,15 +69,14 @@ if __name__ == '__main__':
     else:
         checkpoint_dir += 'scratch/'
 
-    last_model = os.listdir(checkpoint_dir)[-1]
-
     # necessary !!!
     tf.compat.v1.disable_eager_execution()
 
-    h5_path = checkpoint_dir + last_model
-    model = tf.keras.models.load_model(h5_path, compile=False)
     save_pb = False
     if save_pb:
+        last_model = os.listdir(checkpoint_dir)[-1]
+        h5_path = checkpoint_dir + last_model
+        model = tf.keras.models.load_model(h5_path, compile=False)
         # save pb
         with K.get_session() as sess:
             output_names = [out.op.name for out in model.outputs]
