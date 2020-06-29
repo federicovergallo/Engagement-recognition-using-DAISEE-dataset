@@ -9,10 +9,11 @@ import datetime
 import os
 from tqdm import tqdm
 
-BATCH_SIZE = 16
-LR = 0.01
-EPOCHS = 100
+BATCH_SIZE = 64
+LR = 0.005
+EPOCHS = 1000
 use_pretrained = True
+pretrained_name = 'mobilenet'
 current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 checkpoint_dir = 'checkpoints/'
 log_dir = 'logs/'
@@ -44,9 +45,14 @@ def network(use_pretrained=True):
     model = tf.keras.Sequential()
     model.add(kl.InputLayer(input_shape=(224, 224, 3)))
     if use_pretrained:
-        vgg = VGG16(weights='imagenet', input_shape=(224, 224, 3), include_top=False)
-        vgg.trainable = False
-        model.add(vgg)
+        if pretrained_name == 'vgg':
+            vgg = VGG16(weights='imagenet', input_shape=(224, 224, 3), include_top=False)
+            vgg.trainable = False
+            model.add(vgg)
+        if pretrained_name == 'mobilenet':
+            mobnet = MobileNetV2(weights='imagenet', input_shape=(224, 224, 3), include_top=False)
+            mobnet.trainable = False
+            model.add(mobnet)
     else:
         # First conv block
         model.add(kl.Conv2D(filters=96, kernel_size=7, padding='same', strides=2))
@@ -64,9 +70,9 @@ def network(use_pretrained=True):
     # Flatten
     model.add(kl.Flatten())
     # First FC
-    model.add(kl.Dense(4048))
+    model.add(kl.Dense(1024))
     # Second Fc
-    model.add(kl.Dense(4048))
+    model.add(kl.Dense(256))
     # Third FC
     model.add(kl.Dense(4))
     # Softmax at the end
@@ -139,8 +145,17 @@ if __name__ == '__main__':
 
     create_log_dir(log_dir, checkpoint_dir)
 
+    last_models = os.listdir(checkpoint_dir)
+    if last_models != []:
+        last_model_path = checkpoint_dir + '/' + last_models[-1]
+        first_epoch = int(last_models[-1].split("_")[1])
+        model = tf.keras.models.load_model(last_model_path)
+    else:
+        first_epoch = 0
+        model = network()
+
     # Training loop
-    for epoch in range(EPOCHS):
+    for epoch in range(first_epoch, EPOCHS):
         try:
             # Training loop
             for x_batch_train, y_batch_train in tqdm(train_set):
