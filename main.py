@@ -38,15 +38,16 @@ def gen(camera):
                     image = np.expand_dims(image, axis=0)
                     # classification
                     input_tensor = detection_graph.get_tensor_by_name('mobilenetv2_1.00_224_input:0')
-                    output_tensor = detection_graph.get_tensor_by_name('softmax/Softmax:0')
+                    output_tensor = detection_graph.get_tensor_by_name('prediction/Sigmoid:0')
                     output_logits = sess.run(output_tensor, feed_dict={input_tensor: image})
-                    amax = np.argmax(output_logits)
-                    # Output
-                    label, confidence = labels_[amax], output_logits[0, amax]
+                    text_up = 'Bored:'+str(output_logits[0][0])+' Engaged:'+str(output_logits[0][1])
+                    text_down = 'Confused:'+str(output_logits[0][2])+' Frustrated'+str(output_logits[0][2])
                     # Draw rect
                     cv2.rectangle(frame, (int(x), int(y)), (int(x+w), int(y+h)), (0, 255, 0), 2)
-                    # Write label
-                    cv2.putText(frame, label+" "+str(confidence), (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (36, 255, 12), 2)
+                    # Write label Up
+                    cv2.putText(frame, text_up, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (36, 255, 12), 2)
+                    # Write label Down
+                    cv2.putText(frame, text_down, (x, y + h + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (36, 255, 12), 2)
                     break
                 ret, jpeg = cv2.imencode('.jpg', frame)
                 frame = jpeg.tobytes()
@@ -69,15 +70,16 @@ if __name__ == '__main__':
     else:
         checkpoint_dir += 'scratch/'
 
-    last_model = os.listdir(checkpoint_dir)[-1]
-
     # necessary !!!
     tf.compat.v1.disable_eager_execution()
 
-    h5_path = checkpoint_dir + last_model
-    model = tf.keras.models.load_model(h5_path, compile=False)
     save_pb = False
     if save_pb:
+        last_model = os.listdir(checkpoint_dir)[-1]
+        chosen_model = 'Epoch_500_model.hp5'
+        # Chosen model = last_model
+        h5_path = checkpoint_dir + chosen_model
+        model = tf.keras.models.load_model(h5_path, compile=False)
         # save pb
         with K.get_session() as sess:
             output_names = [out.op.name for out in model.outputs]
