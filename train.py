@@ -2,36 +2,39 @@
 # coding: utf-8
 import tensorflow as tf
 import tensorflow.keras.layers as kl
-import tensorflow.keras.losses as klo
 from tensorflow.keras.applications.vgg16 import VGG16
+from tensorflow.keras.applications.mobilenet_v2 import MobileNetV2
 from daisee_data_preprocessing import DataPreprocessing
 import datetime
 import os
 from tqdm import tqdm
 
+physical_devices = tf.config.experimental.list_physical_devices('GPU')
+if len(physical_devices) > 0:
+    tf.config.experimental.set_memory_growth(physical_devices[0], True)
+
 BATCH_SIZE = 64
 LR = 0.005
-EPOCHS = 1000
-use_pretrained = True
+EPOCHS = 500
+use_pretrained = False
+data_augmentation = True
 pretrained_name = 'mobilenet'
 current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 checkpoint_dir = 'checkpoints/'
 log_dir = 'logs/'
-train_summary_writer = tf.summary.create_file_writer(log_dir)
 
-# This part works for setting up space in gpu
-gpus = tf.config.experimental.list_physical_devices('GPU')
-if gpus:
-    # Restrict TensorFlow to only allocate 1GB * 2 of memory on the first GPU
-    try:
-        tf.config.experimental.set_virtual_device_configuration(
-            gpus[0],
-            [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=1024 * 2)])
-        logical_gpus = tf.config.experimental.list_logical_devices('GPU')
-        print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPUs")
-    except RuntimeError as e:
-        # Virtual devices must be set before GPUs have been initialized
-        print(e)
+if use_pretrained:
+    checkpoint_dir += pretrained_name
+    log_dir += pretrained_name
+else:
+    checkpoint_dir += 'scratch'
+    log_dir += 'scratch'
+
+if data_augmentation:
+    checkpoint_dir += '_aug'
+    log_dir += '_aug'
+
+train_summary_writer = tf.summary.create_file_writer(log_dir)
 
 
 def create_log_dir(log_dir, checkpoint_dir):
@@ -41,7 +44,7 @@ def create_log_dir(log_dir, checkpoint_dir):
         os.mkdir(checkpoint_dir)
 
 
-def network(use_pretrained=True):
+def network():
     model = tf.keras.Sequential()
     model.add(kl.InputLayer(input_shape=(224, 224, 3)))
     if use_pretrained:
@@ -55,18 +58,17 @@ def network(use_pretrained=True):
             model.add(mobnet)
     else:
         # First conv block
-        model.add(kl.Conv2D(filters = 96, kernel_size=7, padding='same', strides=2))
-        model.add(tf.keras.layers.ReLU())
-        model.add(kl.MaxPooling2D(pool_size=(3, 3)))
-        # Second conv block
-        model.add(kl.Conv2D(filters = 256, kernel_size=5, padding='same', strides=1))
+        model.add(kl.Conv2D(filters=128, kernel_size=3, padding='same', strides=2))
         model.add(tf.keras.layers.ReLU())
         model.add(kl.MaxPooling2D(pool_size=(2, 2)))
-        # Third-Fourth-Fifth conv block
-        for i in range(3):
-            model.add(kl.Conv2D(filters = 512, kernel_size=3, padding='same', strides=1))
-            model.add(tf.keras.layers.ReLU())
-        model.add(kl.MaxPooling2D(pool_size=(3, 3)))
+        # Second conv block
+        model.add(kl.Conv2D(filters=256, kernel_size=3, padding='same', strides=2))
+        model.add(tf.keras.layers.ReLU())
+        model.add(kl.MaxPooling2D(pool_size=(2, 2)))
+        # Third conv block
+        model.add(kl.Conv2D(filters=512, kernel_size=3, padding='same', strides=2))
+        model.add(tf.keras.layers.ReLU())
+        model.add(kl.MaxPooling2D(pool_size=(2, 2)))
     # Flatten
     model.add(kl.Flatten())
     # First FC
@@ -100,28 +102,6 @@ def macro_f1(y, y_hat, thresh=0.5):
     f1 = 2 * tp / (2 * tp + fn + fp + 1e-16)
     macro_f1 = tf.reduce_mean(f1)
     return macro_f1
-
-@tf.function
-def loss_calc(y, logits):
-    losses = [loss_fn(y[:,0], logits[:,0]),
-              loss_fn(y[:,1], logits[:,1]),
-              loss_fn(y[:,2], logits[:,2]),
-              loss_fn(y[:,3], logits[:,3])
-             ]
-    loss_bor.update_state(losses[0])
-    loss_eng.update_state(losses[1])
-    loss_conf.update_state(losses[2])
-    loss_frus.update_state(losses[3])
-    return sum(losses)
-
-
-@tf.function
-def acc_update(y, logits):
-    acc_bor.update_state(y[0], logits[0])
-    acc_eng.update_state(y[1], logits[1])
-    acc_conf.update_state(y[2], logits[2])
-    acc_frus.update_state(y[3], logits[3])
-
 
 @tf.function
 def train_step(x, y):
@@ -180,78 +160,45 @@ if __name__ == '__main__':
     optimizer = tf.keras.optimizers.Adam(learning_rate=LR)
 
     train_loss_avg = tf.keras.metrics.Mean()
-    train_accuracy = tf.keras.metrics.CategoricalAccuracy()
-    val_accuracy = tf.keras.metrics.CategoricalAccuracy()
-    test_accuracy = tf.keras.metrics.CategoricalAccuracy()
-    # Specific metric
-    '''
-    acc_eng = tf.keras.metrics.CategoricalAccuracy()
-    acc_bor = tf.keras.metrics.CategoricalAccuracy()
-    acc_conf = tf.keras.metrics.CategoricalAccuracy()
-    acc_frus = tf.keras.metrics.CategoricalAccuracy()
-    loss_eng = tf.keras.metrics.Mean()
-    loss_bor = tf.keras.metrics.Mean()
-    loss_conf = tf.keras.metrics.Mean()
-    loss_frus = tf.keras.metrics.Mean()
-    '''
+    train_accuracy = tf.keras.metrics.Mean()
+    val_accuracy = tf.keras.metrics.Mean()
+    test_accuracy = tf.keras.metrics.Mean()
 
     create_log_dir(log_dir, checkpoint_dir)
 
-    last_models = os.listdir(checkpoint_dir)
+    last_models = sorted(os.listdir(checkpoint_dir))
     if last_models:
         last_model_path = checkpoint_dir + '/' + last_models[-1]
         first_epoch = int(last_models[-1].split("_")[1]) + 1
+        print("First epoch is ", first_epoch)
         model = tf.keras.models.load_model(last_model_path)
     else:
         first_epoch = 0
         model = network()
 
     # Train
-    for epoch in range(first_epoch, EPOCHS):
+    for epoch in tqdm(range(first_epoch, EPOCHS+1), total=EPOCHS+1-first_epoch):
         try:
             # Training loop
-            for x_batch_train, y_batch_train in tqdm(train_set, total=256):
+            for x_batch_train, y_batch_train in train_set:
                 # Do step
                 loss_value = train_step(x_batch_train, y_batch_train)
 
             # Test on validation set
             for x_batch_val, y_batch_val in val_set:
-                test_step(x_batch_val, y_batch_val, 'val')
+                test_step(model, x_batch_val, y_batch_val, 'val')
 
             # Write in the summary
             with train_summary_writer.as_default():
                 tf.summary.scalar('Train Loss', train_loss_avg.result(), step=epoch)
                 tf.summary.scalar('Train F1 Score', train_accuracy.result(), step=epoch)
                 tf.summary.scalar('Val F1 Score', val_accuracy.result(), step=epoch)
-                # Specific feature metric
-                '''
-                # - Loss
-                tf.summary.scalar('Bored Loss', loss_bor.result(), step=epoch)
-                tf.summary.scalar('Engaged Loss', loss_eng.result(), step=epoch)
-                tf.summary.scalar('Confused Loss', loss_conf.result(), step=epoch)
-                tf.summary.scalar('Frustrated Loss', loss_frus.result(), step=epoch)
-                # - Acc
-                tf.summary.scalar('Bored Precision', acc_bor.result(), step=epoch)
-                tf.summary.scalar('Engaged Precision', acc_eng.result(), step=epoch)
-                tf.summary.scalar('Confused Precision', acc_conf.result(), step=epoch)
-                tf.summary.scalar('Frustrated Precision', acc_frus.result(), step=epoch)
-                '''
 
             # Reset training metrics at the end of each epoch
             train_accuracy.reset_states()
             val_accuracy.reset_states()
-            '''
-            loss_bor.reset_states()
-            loss_eng.reset_states()
-            loss_conf.reset_states()
-            loss_frus.reset_states()
-            acc_bor.reset_states()
-            acc_eng.reset_states()
-            acc_conf.reset_states()
-            acc_frus.reset_states()
-            '''
 
-            if epoch % 25 == 0:
+            if epoch % 50 == 0:
                 tf.keras.models.save_model(model, '{}/Epoch_{}_model.hp5'.format(checkpoint_dir, str(epoch)),
                                            save_format="h5")
 

@@ -72,7 +72,10 @@ class DataPreprocessing:
         val_df = pd.read_csv(self.val_label_dir, sep=",")
         return train_df, test_df, val_df
 
-    def image_resize(self, image):
+    def resize(self, image):
+        return cv2.resize(image, (self.IMG_HEIGHT, self.IMG_WIDTH), interpolation=cv2.INTER_AREA)
+
+    def face_cropping(self, image):
         # Crop and resize
         faces = self.face_cascade.detectMultiScale(image, 1.3, 5)
         try:
@@ -81,7 +84,7 @@ class DataPreprocessing:
                 image = image[y:y+h, x:x+w]
         except:
             pass
-        return cv2.resize(image, (self.IMG_HEIGHT, self.IMG_WIDTH), interpolation=cv2.INTER_AREA)
+        return self.resize(image)
 
     def random_crop(self, image, crop_height, crop_width):
         max_x = image.shape[1] - crop_width
@@ -92,28 +95,27 @@ class DataPreprocessing:
 
         crop = image[y: y + crop_height, x: x + crop_width]
 
-        return self.image_resize(crop)
+        return self.face_cropping(crop)
 
 
-    def image_edit(self, image):
+    def augment_image(self, image):
         '''
         Applies some augmentation techniques
         '''
         # Mirror flip
-        flipped = tf.image.flip_left_right(image)
-        # Up down flip
-        flip_up_down = tf.image.flip_up_down(image)
+        flipped = tf.image.flip_left_right(image).numpy()
         # Transpose flip
-        transposed = tf.image.transpose(image)
+        transposed = tf.image.transpose(image).numpy()
         # Saturation
-        satured = tf.image.adjust_saturation(image, 3)
+        satured = tf.image.adjust_saturation(image, 3).numpy()
         # Brightness
-        brightness = tf.image.adjust_brightness(image, 0.4)
+        brightness = tf.image.adjust_brightness(image, 0.4).numpy()
         # Contrast
-        contrast = tf.image.random_contrast(image, lower=0.0, upper=1.0)
-        # Random crop
-        cropped = self.random_crop(image, 128, 128)
-        return [flipped, flip_up_down, transposed, satured, brightness, contrast, cropped]
+        contrast = tf.image.random_contrast(image, lower=0.0, upper=1.0).numpy()
+        # Resize at the end
+        images = [self.resize(image) for image in [flipped, transposed, satured, brightness, contrast]]
+        return images
+
 
     def get_label_picture(self, image_path, label_df):
         error_ = False
@@ -125,8 +127,7 @@ class DataPreprocessing:
                               label_series['Engagement'].get(index),
                               label_series['Confusion'].get(index),
                               label_series['Frustration '].get(index)])
-            label_one_hot = np.zeros_like(label)
-            label_one_hot[np.argmax(label)] = 1
+            label_one_hot = (label >= 1).astype(np.uint8)
         except:
             print('Error in label picture')
             print(image_path)
@@ -134,63 +135,13 @@ class DataPreprocessing:
             error_ = True
         return label_one_hot, error_
 
-    def augment_dataset(self, dataset, max_number_of_sample):
-        '''
-        Augment a dataset until a limit
-        '''
-        np.random.shuffle(dataset)
-        aug_dataset = dataset
-        for image in dataset:
-            if aug_dataset.shape[0] >= max_number_of_sample:
-                break
-            for edit in self.image_edit(image):
-                aug_dataset = np.vstack((aug_dataset, np.expand_dims(edit, axis=0)))
-        return aug_dataset
-
-    def data_augmentation(self, balanced_class=True):
-        # Find the less populated dataset and multiply by the number of augmentation techniques
-        aug_techs = 7
-        max_number_of_sample_train = min(self.train_a.shape[0], self.train_b.shape[0])*aug_techs
-        max_number_of_sample_test = min(self.test_a.shape[0], self.test_b.shape[0])*aug_techs
-
-        # Augment dataset
-        print("Augmenting train A.....")
-        self.train_a = self.augment_dataset(self.train_a, max_number_of_sample_train)
-        print("Done train A")
-        print("Augmenting train B....")
-        self.train_b = self.augment_dataset(self.train_b, max_number_of_sample_train)
-        print("Done train B")
-        print("Augmenting test A....")
-        self.test_a = self.augment_dataset(self.test_a, max_number_of_sample_test)
-        print("Done test A")
-        print("Augmenting test B....")
-        self.test_b = self.augment_dataset(self.test_b, max_number_of_sample_test)
-        print("Done test B")
-
-        # Sample
-        if balanced_class:
-            ind_train_vvg = np.random.choice(self.train_a.shape[0], max_number_of_sample_train, replace=False)
-            self.train_a = self.train_a[ind_train_vvg]
-
-            ind_train_photo = np.random.choice(self.train_b.shape[0], max_number_of_sample_train, replace=False)
-            self.train_b = self.train_b[ind_train_photo]
-
-            ind_test_vvg = np.random.choice(self.test_a.shape[0], max_number_of_sample_test, replace=False)
-            self.test_a = self.test_a[ind_test_vvg]
-
-            ind_test_photo = np.random.choice(self.test_b.shape[0], max_number_of_sample_test, replace=False)
-            self.test_b = self.test_b[ind_test_photo]
-
-            assert self.train_a.shape == self.train_b.shape
-            assert self.test_a.shape == self.test_b.shape
-
     def _int64_feature(self, value):
         return tf.train.Feature(int64_list=tf.train.Int64List(value=[value]))
 
     def _bytes_feature(self, value):
         return tf.train.Feature(bytes_list=tf.train.BytesList(value=[value]))
 
-    def writeTfRecord(self, output_dir):
+    def writeTfRecord(self, output_dir, data_augmentation=False):
         '''
         Method to write tfrecord
         '''
@@ -214,19 +165,24 @@ class DataPreprocessing:
             for image_path in tqdm(images_path, total=len(images_path)):
                 # Read the image from path
                 img = cv2.imread(image_path)[..., ::-1]
-                img = self.image_resize(img)
+                img = self.face_cropping(img)
                 # Read the label
                 label, error_ = self.get_label_picture(image_path, label_df)
                 if error_:
                     continue
                 # Create a feature
-                feature = {'label': self._bytes_feature(tf.compat.as_bytes(label.tostring())),
-                           'image': self._bytes_feature(tf.compat.as_bytes(img.tostring()))}
-                # Create an example protocol buffer
-                example = tf.train.Example(features=tf.train.Features(feature=feature))
+                if data_augmentation:
+                    images = self.augment_image(img)
+                else:
+                    images = img
+                for image in images:
+                    feature = {'label': self._bytes_feature(tf.compat.as_bytes(label.tostring())),
+                               'image': self._bytes_feature(tf.compat.as_bytes(image.tostring()))}
+                    # Create an example protocol buffer
+                    example = tf.train.Example(features=tf.train.Features(feature=feature))
 
-                # Serialize to string and write on the file
-                writer.write(example.SerializeToString())
+                    # Serialize to string and write on the file
+                    writer.write(example.SerializeToString())
             writer.close()
 
     def decode(self, serialized_example):
@@ -247,7 +203,10 @@ class DataPreprocessing:
 
         # 2. Convert the data
         image = tf.io.decode_raw(features['image'], tf.uint8)
-        label = tf.io.decode_raw(features['label'], tf.int64)
+        label = tf.io.decode_raw(features['label'], tf.uint8)
+
+        # Cast
+        label = tf.cast(label, tf.float32)
 
         # 3. reshape
         image = tf.convert_to_tensor(tf.reshape(image, IMAGE_SHAPE))
@@ -257,10 +216,8 @@ class DataPreprocessing:
 
 if __name__ == '__main__':
     preprocessing_class = DataPreprocessing()
-    # Download and create dataset
-    #preprocessing_class.create_dataset()
-    # Write tf record
-    #preprocessing_class.writeTfRecord('tfrecords/')
+    # Write tf recordfloat32
+    preprocessing_class.writeTfRecord('tfrecords/', data_augmentation=True)
 
     # Read TfRecord
     tfrecord_path = 'tfrecords/train.tfrecords'

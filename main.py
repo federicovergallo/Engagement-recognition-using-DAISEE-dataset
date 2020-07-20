@@ -37,7 +37,14 @@ def gen(camera):
                     image = cv2.resize(image, (IMG_HEIGHT, IMG_WIDTH), interpolation=cv2.INTER_AREA)
                     image = np.expand_dims(image, axis=0)
                     # classification
-                    input_tensor = detection_graph.get_tensor_by_name('mobilenetv2_1.00_224_input:0')
+                    if use_pretrained:
+                        input_tensor_name = 'mobilenetv2_1.00_224_input:0'
+                    else:
+                        if data_augmentation:
+                            input_tensor_name = 'conv2d_5_input:0'
+                        else:
+                            input_tensor_name = 'conv2d_input:0'
+                    input_tensor = detection_graph.get_tensor_by_name(input_tensor_name)
                     output_tensor = detection_graph.get_tensor_by_name('prediction/Sigmoid:0')
                     output_logits = sess.run(output_tensor, feed_dict={input_tensor: image})
                     text_up = 'Bored:'+str(output_logits[0][0])+' Engaged:'+str(output_logits[0][1])
@@ -64,20 +71,24 @@ def video_feed():
 if __name__ == '__main__':
     checkpoint_dir = 'checkpoints/'
     use_pretrained = True
-    pretrained_name = 'mobilenet/'
+    data_augmentation = True
+    pretrained_name = 'mobilenet'
     if use_pretrained:
         checkpoint_dir += pretrained_name
     else:
-        checkpoint_dir += 'scratch/'
+        checkpoint_dir += 'scratch'
+
+    if data_augmentation:
+        checkpoint_dir += '_aug/'
 
     # necessary !!!
     tf.compat.v1.disable_eager_execution()
 
-    save_pb = False
+    last_model = os.listdir(checkpoint_dir)[-1]
+    chosen_model = 'Epoch_439_model.hp5'
+    # chosen model = last_model
+    save_pb = True
     if save_pb:
-        last_model = os.listdir(checkpoint_dir)[-1]
-        chosen_model = 'Epoch_500_model.hp5'
-        # Chosen model = last_model
         h5_path = checkpoint_dir + chosen_model
         model = tf.keras.models.load_model(h5_path, compile=False)
         # save pb
@@ -92,12 +103,12 @@ if __name__ == '__main__':
         logging.info("save pb successfully！")
 
     # Load Frozen graph
-    PATH_TO_CKPT = checkpoint_dir + 'model.pb'
+    pb_file = checkpoint_dir + 'model.pb'
     # Load a (frozen) Tensorflow model into memory.
     detection_graph = tf.Graph()
     with detection_graph.as_default():
         od_graph_def = tf.compat.v1.GraphDef()
-        with tf.io.gfile.GFile(PATH_TO_CKPT, 'rb') as fid:
+        with tf.io.gfile.GFile(pb_file, 'rb') as fid:
             serialized_graph = fid.read()
             od_graph_def.ParseFromString(serialized_graph)
             tf.import_graph_def(od_graph_def, name='')
