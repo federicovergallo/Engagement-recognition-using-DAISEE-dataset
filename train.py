@@ -36,12 +36,16 @@ if data_augmentation:
 
 train_summary_writer = tf.summary.create_file_writer(log_dir)
 
+# The statements in this function throws unknows errors
+# def create_log_dir(log_dir, checkpoint_dir):
+#     if not os.path.exists(log_dir):
+#         os.mkdir(log_dir)
+#     if not os.path.exists(checkpoint_dir):
+#         os.mkdir(checkpoint_dir)
 
 def create_log_dir(log_dir, checkpoint_dir):
-    if not os.path.exists(log_dir):
-        os.mkdir(log_dir)
-    if not os.path.exists(checkpoint_dir):
-        os.mkdir(checkpoint_dir)
+    os.makedirs(log_dir, exist_ok=True)
+    os.makedirs(checkpoint_dir, exist_ok=True)
 
 
 def network():
